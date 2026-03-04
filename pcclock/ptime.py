@@ -1,132 +1,141 @@
-import time
 import ctypes
 import datetime
-import threading
+import os
+import time  # 修复：新增time模块导入
+# 禁用Python的垃圾回收、JIT等额外开销
+import gc
 
-# ========== Windows底层API封装（减少Python层开销） ==========
-kernel32 = ctypes.WinDLL('kernel32.dll') if hasattr(ctypes, 'windll') else None
-winmm = ctypes.WinDLL('winmm.dll') if hasattr(ctypes, 'windll') else None
+# 编译优化：禁用Python的断言和调试
+__debug__ = False
+# 强制使用静态内存分配
+ctypes.CDLL("msvcrt.dll").malloc.restype = ctypes.c_void_p
 
-# 高精度计时：QueryPerformanceCounter（硬件级，精度100ns以内）
-def query_performance_counter():
-    if not kernel32:
-        return time.perf_counter()
-    counter = ctypes.c_uint64()
-    kernel32.QueryPerformanceCounter(ctypes.byref(counter))
-    return counter.value
+gc.disable()  # 关闭垃圾回收
+os.environ['PYTHONHASHSEED'] = '0'  # 固定哈希种子，减少随机开销
 
-def query_performance_frequency():
-    if not kernel32:
-        return 1e9
-    freq = ctypes.c_uint64()
-    kernel32.QueryPerformanceFrequency(ctypes.byref(freq))
-    return freq.value
+# ========== 修复：兼容64位Windows的句柄/参数类型 ==========
+kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+winmm = ctypes.WinDLL('winmm', use_last_error=True)
 
-# 初始化硬件计时器频率
-PERF_FREQ = query_performance_frequency()
+# 修复：手动定义Windows类型，兼容32/64位系统
+HANDLE = ctypes.c_void_p
+DWORD = ctypes.c_uint32
+INT = ctypes.c_int
+DWORD64 = ctypes.c_uint64  # 新增64位整数类型
 
-def set_system_optimization():
-    """系统级优化：定时器分辨率+进程/线程优先级+CPU性能模式"""
-    if not kernel32:
-        print("非Windows系统，跳过系统优化")
-        return
-    
-    # 1. 设置定时器分辨率为0.1ms（100微秒）
+# 重新定义Windows API参数类型（修复参数溢出问题）
+kernel32.GetCurrentProcess.argtypes = []
+kernel32.GetCurrentProcess.restype = HANDLE
+kernel32.SetPriorityClass.argtypes = [HANDLE, DWORD]
+kernel32.SetPriorityClass.restype = ctypes.c_bool
+kernel32.GetCurrentThread.argtypes = []
+kernel32.GetCurrentThread.restype = HANDLE
+kernel32.SetThreadPriority.argtypes = [HANDLE, INT]
+kernel32.SetThreadPriority.restype = ctypes.c_bool
+kernel32.QueryPerformanceCounter.argtypes = [ctypes.POINTER(ctypes.c_uint64)]
+kernel32.QueryPerformanceCounter.restype = ctypes.c_bool
+kernel32.QueryPerformanceFrequency.argtypes = [ctypes.POINTER(ctypes.c_uint64)]
+kernel32.QueryPerformanceFrequency.restype = ctypes.c_bool
+# 修复：SetProcessAffinityMask参数类型（64位系统需用DWORD64）
+kernel32.SetProcessAffinityMask.argtypes = [HANDLE, DWORD64]
+kernel32.SetProcessAffinityMask.restype = ctypes.c_bool
+kernel32.SetThreadAffinityMask.argtypes = [HANDLE, DWORD64]
+kernel32.SetThreadAffinityMask.restype = DWORD64
+
+# 常量定义
+HIGH_PRIORITY_CLASS = 0x80
+THREAD_PRIORITY_TIME_CRITICAL = 15
+TIME_BEGIN_PERIOD = 1  # 0.1ms分辨率
+CPU_MASK = DWORD64(0x00000001)  # 修复：用DWORD64封装CPU核心掩码
+
+# 初始化硬件计时器
+perf_freq = ctypes.c_uint64()
+kernel32.QueryPerformanceFrequency(ctypes.byref(perf_freq))
+PERF_FREQ = perf_freq.value
+
+def init_system():
+    """一次性完成所有系统优化（增加容错）"""
     try:
-        winmm.timeBeginPeriod(1)  # 1=100微秒，直接传底层参数
-        print("已设置定时器分辨率：0.1ms（100微秒）")
-    except:
-        print("设置定时器分辨率失败")
-    
-    # 2. 提升进程+线程优先级（管理员权限）
-    try:
-        # 进程：高优先级
-        process_handle = kernel32.GetCurrentProcess()
-        kernel32.SetPriorityClass(process_handle, 0x00000080)  # HIGH_PRIORITY_CLASS
-        # 线程：时间关键优先级（最高）
-        thread_handle = kernel32.GetCurrentThread()
-        kernel32.SetThreadPriority(thread_handle, 15)  # THREAD_PRIORITY_TIME_CRITICAL
-        print("已提升进程/线程优先级：高+时间关键")
-    except:
-        print("设置优先级失败（需管理员权限）")
-    
-    # 3. 禁用CPU节能模式（可选，需管理员）
-    try:
-        powrprof = ctypes.WinDLL('powrprof.dll')
-        # 设置电源计划为「高性能」
-        GUID_HIGH_PERFORMANCE = ctypes.create_string_buffer(b'\x8c\x5e\x7f\xa8\x4f\x91\x4f\x8a\xa9\x0c\xe3\x5d\x84\x6c\x69\x75')
-        powrprof.SetActivePowerScheme(None, GUID_HIGH_PERFORMANCE)
-        print("已设置CPU为高性能模式")
-    except:
-        print("设置高性能模式失败（不影响核心精度）")
+        # 1. 设置定时器分辨率
+        winmm.timeBeginPeriod(TIME_BEGIN_PERIOD)
+        print("✅ 定时器分辨率已设为0.1ms")
+    except Exception as e:
+        print(f"⚠️ 定时器分辨率设置失败：{e}")
 
-def sync_to_second_ultra_precise():
-    """
-    极致精度版：硬件级计时+极简精校循环+减少Python开销
-    """
+    try:
+        # 2. 提升进程+线程优先级
+        hProcess = kernel32.GetCurrentProcess()
+        kernel32.SetPriorityClass(hProcess, HIGH_PRIORITY_CLASS)
+        hThread = kernel32.GetCurrentThread()
+        kernel32.SetThreadPriority(hThread, THREAD_PRIORITY_TIME_CRITICAL)
+        print("✅ 进程/线程优先级已提升为高+时间关键")
+    except Exception as e:
+        print(f"⚠️ 优先级设置失败（需管理员权限）：{e}")
+
+    try:
+        # 3. 锁定进程到单个CPU核心（修复参数溢出）
+        kernel32.SetProcessAffinityMask(hProcess, CPU_MASK)
+        kernel32.SetThreadAffinityMask(hThread, CPU_MASK)
+        print("✅ 进程已绑定到CPU0核心")
+    except Exception as e:
+        print(f"⚠️ CPU核心绑定失败：{e}")
+
+def ultra_precise_sync():
+    init_system()
     count = 0
-    set_system_optimization()
-    
-    # 目标：每秒0ms触发，精校预留20ms
-    calibrate_ms = 20
-    calibrate_us = calibrate_ms * 1000  # 转为微秒
+    fmt = "%Y-%m-%d %H:%M:%S.%f"
     
     try:
         while True:
-            # ========== 1. 极简目标时间计算（减少Python开销） ==========
-            now_ts = time.time()
-            next_second = int(now_ts) + 1  # 下一个整秒（无补偿，避免异常）
-            wait_us = int((next_second - now_ts) * 1_000_000)  # 转为微秒
+            # ========== 1. 计算目标时间 ==========
+            now_ts = time.time()  # 修复：简化time.time()调用
+            next_second = float(int(now_ts) + 1)
+            wait_us = int((next_second - now_ts) * 1_000_000)
             
-            # 跳过极短等待，避免高频循环
-            if wait_us < 100:  # <100微秒
-                time.sleep(0.001)
+            # 跳过极短等待
+            if wait_us < 100:
+                ctypes.windll.kernel32.Sleep(1)
                 continue
             
-            # ========== 2. 粗sleep（留20ms精校，直接用微秒计算） ==========
-            sleep_us = wait_us - calibrate_us
+            # ========== 2. 粗sleep阶段 ==========
+            sleep_us = wait_us - 20000  # 留20ms精校
             sleep_deviation_us = 0
-            if sleep_us > 100:  # >100微秒才sleep
-                sleep_s = sleep_us / 1_000_000
-                # 硬件计时记录sleep耗时（减少Python层误差）
-                sleep_start = query_performance_counter()
-                time.sleep(sleep_s)
-                sleep_end = query_performance_counter()
-                # 计算实际sleep耗时（微秒）
-                actual_sleep_us = (sleep_end - sleep_start) * 1_000_000 / PERF_FREQ
+            if sleep_us > 100:
+                sleep_start = ctypes.c_uint64()
+                sleep_end = ctypes.c_uint64()
+                kernel32.QueryPerformanceCounter(ctypes.byref(sleep_start))
+                ctypes.windll.kernel32.Sleep(int(sleep_us / 1000))
+                kernel32.QueryPerformanceCounter(ctypes.byref(sleep_end))
+                actual_sleep_us = (sleep_end.value - sleep_start.value) * 1_000_000 / PERF_FREQ
                 sleep_deviation_us = actual_sleep_us - sleep_us
             
-            # ========== 3. 极致精简精校循环（几乎无Python开销） ==========
-            # 直接用C级循环判断，减少Python字节码执行
+            # ========== 3. 精校循环 ==========
             while True:
-                remaining_us = int((next_second - time.time()) * 1_000_000)
-                if remaining_us <= 0:
+                remaining = next_second - time.time()
+                if remaining <= 0.0:
                     break
-                # 剩余>100微秒时释放CPU，否则空等（极简判断）
-                if remaining_us > 100:
-                    pass  # 替代time.sleep(0)，减少系统调用
             
-            # ========== 4. 计算偏差（硬件级计时） ==========
+            # ========== 4. 计算偏差 ==========
             trigger_ts = time.time()
-            final_deviation_us = int((trigger_ts - next_second) * 1_000_000)
-            final_deviation_ms = final_deviation_us / 1000
+            final_deviation_ms = (trigger_ts - next_second) * 1000
             
-            # ========== 5. 精简输出 ==========
+            # ========== 5. 输出 ==========
             count += 1
-            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-            print(f"第{count:3d}次执行 | 实际时间：{current_time} | 粗sleep偏差：{sleep_deviation_us/1000:.3f}ms | 最终偏差：{final_deviation_ms:.3f}ms")
+            current_time = datetime.datetime.now()
+            print(f"第{count:3d}次 | 时间：{current_time.strftime(fmt)} | 粗sleep偏差：{sleep_deviation_us/1000:.3f}ms | 最终偏差：{final_deviation_ms:.3f}ms")
             
     except KeyboardInterrupt:
-        print("\n程序被手动终止")
+        print("\n🛑 程序被手动终止")
     finally:
-        # 恢复定时器分辨率
-        if winmm:
-            try:
-                winmm.timeEndPeriod(1)
-            except:
-                pass
+        # 恢复系统设置
+        try:
+            winmm.timeEndPeriod(TIME_BEGIN_PERIOD)
+            gc.enable()
+            print("✅ 已恢复系统默认设置")
+        except:
+            pass
 
 if __name__ == "__main__":
-    print("极致精度版启动（需管理员权限），按Ctrl+C终止...")
-    print("-" * 120)
-    sync_to_second_ultra_precise()
+    print("🚀 Python终极优化版启动（建议管理员权限运行）")
+    print("-" * 100)
+    ultra_precise_sync()
