@@ -1,0 +1,2 @@
+# 关键：移除-w参数（显示控制台）+ 增加--uac-admin（强制提权）
+pyinstaller -F --optimize=2 --python-option=-OO --clean --uac-admin ptime.py
