@@ -1,29 +1,23 @@
 import ctypes
 import datetime
 import os
-import time  # 修复：新增time模块导入
+import time
 # 禁用Python的垃圾回收、JIT等额外开销
 import gc
-
-# 编译优化：禁用Python的断言和调试
-__debug__ = False
-# 强制使用静态内存分配
-ctypes.CDLL("msvcrt.dll").malloc.restype = ctypes.c_void_p
-
 gc.disable()  # 关闭垃圾回收
 os.environ['PYTHONHASHSEED'] = '0'  # 固定哈希种子，减少随机开销
 
-# ========== 修复：兼容64位Windows的句柄/参数类型 ==========
+# ========== 兼容64位Windows的句柄/参数类型 ==========
 kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
 winmm = ctypes.WinDLL('winmm', use_last_error=True)
 
-# 修复：手动定义Windows类型，兼容32/64位系统
+# 手动定义Windows类型，兼容32/64位系统
 HANDLE = ctypes.c_void_p
 DWORD = ctypes.c_uint32
 INT = ctypes.c_int
-DWORD64 = ctypes.c_uint64  # 新增64位整数类型
+DWORD64 = ctypes.c_uint64  # 64位整数类型
 
-# 重新定义Windows API参数类型（修复参数溢出问题）
+# 重新定义Windows API参数类型
 kernel32.GetCurrentProcess.argtypes = []
 kernel32.GetCurrentProcess.restype = HANDLE
 kernel32.SetPriorityClass.argtypes = [HANDLE, DWORD]
@@ -36,7 +30,6 @@ kernel32.QueryPerformanceCounter.argtypes = [ctypes.POINTER(ctypes.c_uint64)]
 kernel32.QueryPerformanceCounter.restype = ctypes.c_bool
 kernel32.QueryPerformanceFrequency.argtypes = [ctypes.POINTER(ctypes.c_uint64)]
 kernel32.QueryPerformanceFrequency.restype = ctypes.c_bool
-# 修复：SetProcessAffinityMask参数类型（64位系统需用DWORD64）
 kernel32.SetProcessAffinityMask.argtypes = [HANDLE, DWORD64]
 kernel32.SetProcessAffinityMask.restype = ctypes.c_bool
 kernel32.SetThreadAffinityMask.argtypes = [HANDLE, DWORD64]
@@ -46,7 +39,7 @@ kernel32.SetThreadAffinityMask.restype = DWORD64
 HIGH_PRIORITY_CLASS = 0x80
 THREAD_PRIORITY_TIME_CRITICAL = 15
 TIME_BEGIN_PERIOD = 1  # 0.1ms分辨率
-CPU_MASK = DWORD64(0x00000001)  # 修复：用DWORD64封装CPU核心掩码
+CPU_MASK = DWORD64(0x00000001)  # CPU0核心掩码
 
 # 初始化硬件计时器
 perf_freq = ctypes.c_uint64()
@@ -73,7 +66,7 @@ def init_system():
         print(f"⚠️ 优先级设置失败（需管理员权限）：{e}")
 
     try:
-        # 3. 锁定进程到单个CPU核心（修复参数溢出）
+        # 3. 锁定进程到单个CPU核心
         kernel32.SetProcessAffinityMask(hProcess, CPU_MASK)
         kernel32.SetThreadAffinityMask(hThread, CPU_MASK)
         print("✅ 进程已绑定到CPU0核心")
@@ -88,7 +81,7 @@ def ultra_precise_sync():
     try:
         while True:
             # ========== 1. 计算目标时间 ==========
-            now_ts = time.time()  # 修复：简化time.time()调用
+            now_ts = time.time()
             next_second = float(int(now_ts) + 1)
             wait_us = int((next_second - now_ts) * 1_000_000)
             
