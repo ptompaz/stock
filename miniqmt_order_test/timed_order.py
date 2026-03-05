@@ -436,11 +436,23 @@ def main() -> int:
             # If no valid order_id returned, keep retrying on the fixed interval.
             valid_order_id = True
             try:
-                valid_order_id = order_id is not None and int(order_id) != 0
+                oid = int(order_id)
+                valid_order_id = order_id is not None and oid != 0 and oid != -1
             except Exception:
                 valid_order_id = False
             if not valid_order_id:
                 print(_now(), f"attempt={attempt}/{retry_times} invalid order_id, retrying")
+
+                # When order_id is invalid (e.g. -1), order_error callback is often the only place
+                # to get the real reason. Wait a short time and print the latest error if any.
+                err_deadline = time.time() + 0.05
+                err = cb.consume_last_error_since(call_end_ts)
+                while err is None and time.time() < err_deadline:
+                    cb._normal_order_event.wait(timeout=0.001)
+                    err = cb.consume_last_error_since(call_end_ts)
+                if err is not None:
+                    print(_now(), f"attempt={attempt}/{retry_times} order_error_for_invalid_order_id:", _fmt_obj(err))
+
                 interval_ms = retry_interval_ms if attempt <= phase1_count else retry_interval_ms2
                 elapsed_ms = (time.time() - attempt_start_ts) * 1000.0
                 sleep_ms = max(0.0, interval_ms - elapsed_ms)
