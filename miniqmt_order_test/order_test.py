@@ -1,6 +1,7 @@
 from __future__ import annotations
 import time
 import json
+import os
 from datetime import datetime
 from xtquant import xttrader, xtdata
 from typing import Dict, Optional, Any
@@ -23,6 +24,11 @@ def _now_str() -> str:
 def init_trader() -> Optional[xttrader.XtQuantTrader]:
     """初始化QMT交易客户端（适配新版xtquant）"""
     print(f"[{_now_str()}] 🚀 开始初始化交易客户端，路径：{CLIENT_PATH}")
+
+    if not CLIENT_PATH or not os.path.isdir(CLIENT_PATH):
+        print(f"[{_now_str()}] ❌ CLIENT_PATH 目录不存在或不可访问：{CLIENT_PATH}")
+        print("🔍 请将 CLIENT_PATH 改为当前机器上 MiniQMT/QMT 的 userdata 目录（例如 ...\\userdata_mini）")
+        return None
     
     try:
         # 修复：新版XtQuantTrader必须传入session参数
