@@ -287,6 +287,10 @@ def main() -> int:
         print("volume must be > 0")
         return 2
 
+    if not args.qmt_path or not os.path.isdir(args.qmt_path):
+        print(_now(), "qmt-path directory not found or not accessible:", args.qmt_path)
+        return 2
+
     if args.live and args.confirm != "YES":
         print("Refusing to place live order: pass --confirm YES")
         return 2
