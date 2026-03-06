@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
@@ -59,13 +60,47 @@ class Callback(xttrader.XtQuantTraderCallback):
     def __init__(self) -> None:
         super().__init__()
         self._last_error: Optional[Dict[str, Any]] = None
+        self._lock = threading.Lock()
+        self._last_stock_order_ts = 0.0
+        self._stock_order_event = threading.Event()
 
     def on_order_error(self, order_error):
         self._last_error = {"ts": time.time(), "data": order_error}
         print(f"[{_now_str()}] on_order_error:\n{_fmt_obj(order_error)}")
 
     def on_stock_order(self, order):
-        print(f"[{_now_str()}] on_stock_order:\n{_fmt_obj(order)}")
+        d = _obj_to_dict(order)
+        status = d.get("order_status")
+        if status is None:
+            status = d.get("status")
+        status_msg = d.get("status_msg")
+        if status_msg is None:
+            status_msg = d.get("m_strStatusMsg")
+        order_id = d.get("order_id")
+        if order_id is None:
+            order_id = d.get("m_nOrderID")
+        order_sysid = d.get("order_sysid")
+        if order_sysid is None:
+            order_sysid = d.get("m_strOrderSysID")
+
+        with self._lock:
+            self._last_stock_order_ts = time.time()
+            self._stock_order_event.set()
+
+        print(
+            f"[{_now_str()}] on_stock_order: order_id={order_id} order_sysid={order_sysid} order_status={status} status_msg={status_msg!r}\n{_fmt_obj(order)}"
+        )
+
+    def wait_stock_order_since(self, since_ts: float, timeout_s: float) -> bool:
+        deadline = time.time() + max(0.0, float(timeout_s))
+        while time.time() < deadline:
+            remaining = deadline - time.time()
+            self._stock_order_event.wait(timeout=max(0.0, min(0.2, remaining)))
+            with self._lock:
+                if self._last_stock_order_ts >= since_ts:
+                    return True
+            # keep waiting; callback might be for older order
+        return False
 
     def consume_last_error_since(self, since_ts: float) -> Optional[Any]:
         if not self._last_error:
@@ -161,6 +196,10 @@ def main() -> int:
         )
 
         print(f"[{_now_str()}] order_stock returned order_id={order_id}")
+
+        # Wait a short while for on_stock_order callback to show final status/remarks.
+        # This avoids exiting too fast and missing the order_status (e.g. 54/56/57).
+        cb.wait_stock_order_since(submit_start_ts, timeout_s=1.5)
 
         if not order_id or int(order_id) <= 0:
             deadline = time.time() + max(0, args.error_wait_ms) / 1000.0

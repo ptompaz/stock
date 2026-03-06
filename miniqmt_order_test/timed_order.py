@@ -250,13 +250,32 @@ class Callback(xttrader.XtQuantTraderCallback):
         print(_now(), "[cb] order_error:", _fmt_obj(order_error))
 
     def on_stock_order(self, order):
+        d = _obj_to_dict(order)
+
+        status = d.get("order_status")
+        if status is None:
+            status = d.get("status")
+
+        status_msg = d.get("status_msg")
+        if status_msg is None:
+            status_msg = d.get("m_strStatusMsg")
+
+        order_id = d.get("order_id")
+        if order_id is None:
+            order_id = d.get("m_nOrderID")
+
+        order_sysid = d.get("order_sysid")
+        if order_sysid is None:
+            order_sysid = d.get("m_strOrderSysID")
+
+        print(
+            _now(),
+            f"[cb] stock_order: order_id={order_id} order_sysid={order_sysid} order_status={status} status_msg={status_msg!r}",
+        )
+
         with self._lock:
             self._last_stock_order = order
             self._last_stock_order_ts = time.time()
-            d = _obj_to_dict(order)
-            status = d.get("order_status")
-            if status is None:
-                status = d.get("status")
             is_junk = False
             try:
                 junk = getattr(xtconstant, "ORDER_JUNK", None)
