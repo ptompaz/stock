@@ -8,7 +8,15 @@
 
 ## 目录内文件说明（逐个）
 
-### 1）`order_smoke_test.py`
+
+使用方式
+校准时间在调用
+python estimate_broker_ntp_offset.py --live --confirm YES
+然后
+python timed_order.py --at 09:15:00 --code 601059.SH --side sell --volume 100 --price 19.5 --calibrate --live --confirm YES
+来枪单
+
+### 1）`place_order.py`
 
 用途：
 
@@ -18,34 +26,14 @@
 
 用法（单行）：
 
-```bash
-python order_smoke_test.py --qmt-path "F:\stock\qmt\userdata_mini" --account-id "31161458" --query-only --wait 2
-```
+buy
+>python place_order.py --side buy --stockid 601995.SH --price 33.5  --volume 1000 --account-id 31161458 --live --confirm YES --error-wait-ms 5000
 
-真实下单（高风险，需要显式开启）：
+sell
+python place_order.py --side sell --stockid 601995.SH --price 35.5  --volume 1000 --account-id 31161458 --live --confirm YES --error-wait-ms 5000
 
-```bash
-python order_smoke_test.py --qmt-path "F:\stock\qmt\userdata_mini" --account-id "31161458" --live --confirm YES --code 000001.SZ --side buy --volume 100 --limit --price 10.23
-```
-
-### 2）`sell_601059_100_at_17_5.py`
-
-用途：最简“固定参数卖出”脚本（只做卖单动作，不做查询）。
-
-- 固定：卖出 `601059.SH`、`100` 股、限价 `17.5`
-- 默认 dry-run
-
-用法：
-
-```bash
-python sell_601059_100_at_17_5.py
-```
-
-真实下单：
-
-```bash
-python sell_601059_100_at_17_5.py --live --confirm YES
-```
+可转债
+python place_order.py --side buy --stockid 113033.SH --price 109.1  --volume 500 --account-id 31161458 --live --confirm YES --error-wait-ms 5000
 
 
 
@@ -66,7 +54,7 @@ python timed_order.py --at 14:48:01 --code 601059.SH --side sell --volume 100 --
 真实下单：
 
 ```bash
-python timed_order.py --at 14:48:01 --code 601059.SH --side sell --volume 100 --price 17.5 --live --confirm YES
+python timed_order.py --at 14:48:01 --code 601995.SH --side sell --volume 1000 --price 35.5 --live --confirm YES
 ```
 
 可选：开启“校准触发”（在本机提前触发，目标是在券商机房更接近 0 秒）
@@ -82,6 +70,7 @@ python timed_order.py --at 14:48:01 --code 601059.SH --side sell --volume 100 --
 
 ```bash
 python timed_order.py --at 09:15:00 --code 601059.SH --side sell --volume 100 --price 17.5 --calibrate --live --confirm YES
+python timed_order.py --at 12:55:32.100 --code 601059.SH --side buy --volume 100 --price 17.0 --calibrate --live --confirm YES --retry-times 1
 ```
 
 校准参数（默认值就是你当前常用口径）：
@@ -97,6 +86,41 @@ python timed_order.py --at 09:15:00 --code 601059.SH --side sell --volume 100 --
 - `--calibrate` 是可选开关，不开则完全按本机 `--at` 卡点触发。
 - 任一环节失败会自动降级为 `advance_ms=0`（不影响脚本运行，只是不提前）。
 - 符号口径：`ntp_offset_ms > 0` 表示“本机时间比 NTP 早”，因此脚本会做“提前触发”（从目标时刻减去该值）。
+
+#### 测试“券商时钟/柜台口径时间”相对本机/NTP 的偏差（秒级）
+
+说明：
+
+- 你在券商界面看到的下单时间，通常更接近 `query_stock_orders` 返回的 `order_time`。
+- `order_time` 是 Unix 时间戳（秒），只有秒级粒度，常见口径是“柜台受理时间/入队时间”，并可能存在取整/截断。
+- 因为只有秒级，下面方法的目标是估算：券商侧时间与本机时间的“秒级偏差/截断边界”，不是毫秒级精准对时。
+
+步骤（建议先小风险标的/小数量测试，且每次只发 1 次）：
+
+1）选择一个未来的“整秒”目标时刻 `T`（例如 `12:27:22.000`）。
+
+2）用不同毫秒偏移去试探，例如 `T+0ms / +50ms / +100ms / +150ms ...`：
+
+```bash
+python timed_order.py --at 12:27:22.000 --code 601059.SH --side buy --volume 100 --price 17.0 --calibrate --live --confirm YES --retry-times 1
+python timed_order.py --at 12:27:22.050 --code 601059.SH --side buy --volume 100 --price 17.0 --calibrate --live --confirm YES --retry-times 1
+python timed_order.py --at 12:27:22.100 --code 601059.SH --side buy --volume 100 --price 17.0 --calibrate --live --confirm YES --retry-times 1
+python timed_order.py --at 12:27:22.150 --code 601059.SH --side buy --volume 100 --price 17.0 --calibrate --live --confirm YES --retry-times 1
+```
+
+3）每次下单后，用 `query_orders_today.py` 或你自己的查询方式拿到对应订单的 `order_time`，并换算成北京时间 `HH:MM:SS`。
+
+4）观察：当你逐步增加 `mmm` 时，`order_time` 显示的秒数会在某个阈值附近从 `...:SS-1` 跳到 `...:SS`。
+
+经验解释：
+
+- 如果你在本机看到 `TRIGGER` 已经是 `...:SS.xxx`，但 `order_time` 仍落在 `...:SS-1`，通常意味着券商端口径时间相对本机“更慢/更早”，或其取整边界更偏向上一秒。
+- 通过“发生跳变的最小偏移毫秒”可以估计一个秒级差异（例如约 1s 内的偏差/截断边界）。
+
+注意：
+
+- 一定使用 `--retry-times 1`，否则会一次产生多笔委托，扰乱统计。
+- 只看 `order_time`（秒）无法得到毫秒级对时结论；要毫秒级只能依赖交易所回报时间字段（若系统有提供）或更底层网关日志。
 
 
 ### 6）`ntp_detect.py`
@@ -125,7 +149,10 @@ python icmp_ping.py --host 139.224.114.71 --count 5 --timeout-ms 50
 - 已安装并能正常登录 MiniQMT/QMT（普通股票账户）。
 - 本机 Python 已可 `import xtquant`。
 
+需要Python 3.12.10
+
 
 pip install xtquant
 pip install ntplib
+pip install icmplib
 

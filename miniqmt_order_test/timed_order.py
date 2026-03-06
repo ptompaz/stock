@@ -45,17 +45,34 @@ def _ping_windows_avg_rtt_ms(output: str):
 
 def get_ping_rtt_half_ms(host: str, count: int, timeout_ms: int):
     try:
-        proc = subprocess.run(
-            ["ping", "-n", str(int(count)), "-w", str(int(timeout_ms)), host],
-            capture_output=True,
-            text=True,
-            check=False,
+        from icmplib import ping as _icmp_ping
+    except Exception as e:
+        return {"success": False, "error": f"icmplib not available: {e}. Install with: pip install icmplib"}
+
+    try:
+        # Hard-coded sampling to reduce calibration delay:
+        # 4 samples, every 100ms. (CLI --ping-count is ignored.)
+        h = _icmp_ping(
+            host,
+            count=4,
+            interval=0.1,
+            timeout=max(0.001, float(timeout_ms) / 1000.0),
+            privileged=False,
         )
-        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        avg_rtt_ms = _ping_windows_avg_rtt_ms(out)
+
+        avg_rtt_ms = getattr(h, "avg_rtt", None)
         if avg_rtt_ms is None:
-            return {"success": False, "error": "无法解析ping输出", "raw": out.strip()}
-        return {"success": True, "avg_rtt_ms": float(avg_rtt_ms), "rtt_half_ms": float(avg_rtt_ms) / 2.0}
+            return {"success": False, "error": "icmplib ping returned no avg_rtt"}
+
+        try:
+            avg_rtt_ms = float(avg_rtt_ms)
+        except Exception:
+            return {"success": False, "error": f"invalid avg_rtt: {avg_rtt_ms}"}
+
+        if avg_rtt_ms <= 0:
+            return {"success": False, "error": f"avg_rtt_ms<=0: {avg_rtt_ms}"}
+
+        return {"success": True, "avg_rtt_ms": avg_rtt_ms, "rtt_half_ms": avg_rtt_ms / 2.0}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -156,6 +173,29 @@ def _parse_at_time(at: str) -> datetime.time:
         return datetime.time(base.hour, base.minute, base.second, int(frac))
     base = datetime.datetime.strptime(s, "%H:%M:%S").time()
     return base
+
+
+def _load_broker_advance_ms_for_date(date_str: str) -> Optional[float]:
+    path = os.path.join(os.path.dirname(__file__), "broker_advance_ms.txt")
+    if not os.path.isfile(path):
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if not s or "=" not in s:
+                    continue
+                k, v = s.split("=", 1)
+                if k.strip() != date_str:
+                    continue
+                try:
+                    return float(v.strip())
+                except Exception:
+                    return None
+    except Exception:
+        return None
+    return None
 
 
 def _target_epoch(at_time: datetime.time, date: datetime.date, *, next_day_if_passed: bool) -> float:
@@ -310,9 +350,23 @@ def main() -> int:
 
     print(_now(), "target:", target_dt.strftime("%Y-%m-%d %H:%M:%S.%f"))
 
+    # If we have a precomputed daily broker delay, use it directly and skip ping/NTP.
+    date_str = date.strftime("%Y-%m-%d")
+    daily_advance_ms = _load_broker_advance_ms_for_date(date_str)
+
     # calibration: advance_ms = ntp_offset_ms + rtt_half_ms; adjusted_target = target - advance_ms
     advance_ms = 0.0
-    if args.calibrate:
+    if daily_advance_ms is not None:
+        # NOTE: The persisted value represents broker clock lag vs local time (local - broker).
+        # To land in the intended broker second, we should delay local trigger by this amount.
+        delay_ms = float(daily_advance_ms)
+        advance_ms = float(daily_advance_ms)
+        adjusted_target_ts = target_ts + (delay_ms / 1000.0)
+        print(
+            _now(),
+            f"delay_ms={delay_ms:.3f} (broker_advance_ms.txt {date_str}), adjusted_target={_fmt_ts(adjusted_target_ts)}",
+        )
+    elif args.calibrate:
         try:
             ping = get_ping_rtt_half_ms(args.broker_host, int(args.ping_count), int(args.ping_timeout_ms))
             if ping.get("success"):
