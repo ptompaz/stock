@@ -66,7 +66,24 @@ class Callback(xttrader.XtQuantTraderCallback):
 
     def on_order_error(self, order_error):
         self._last_error = {"ts": time.time(), "data": order_error}
-        print(f"[{_now_str()}] on_order_error:\n{_fmt_obj(order_error)}")
+        try:
+            fields = {
+                "error_id": getattr(order_error, "error_id", None),
+                "error_msg": getattr(order_error, "error_msg", None),
+                "m_strErrorMsg": getattr(order_error, "m_strErrorMsg", None),
+                "m_nErrorID": getattr(order_error, "m_nErrorID", None),
+                "order_id": getattr(order_error, "order_id", None),
+                "seq": getattr(order_error, "seq", None),
+                "strategy_name": getattr(order_error, "strategy_name", None),
+                "order_remark": getattr(order_error, "order_remark", None),
+                "account_id": getattr(order_error, "account_id", None),
+            }
+        except Exception:
+            fields = None
+        if fields:
+            print(f"[{_now_str()}] on_order_error fields:\n{json.dumps(fields, ensure_ascii=False, indent=2)}")
+        else:
+            print(f"[{_now_str()}] on_order_error: {repr(order_error)}")
 
     def on_stock_order(self, order):
         d = _obj_to_dict(order)
@@ -199,7 +216,11 @@ def main() -> int:
 
         # Wait a short while for on_stock_order callback to show final status/remarks.
         # This avoids exiting too fast and missing the order_status (e.g. 54/56/57).
-        cb.wait_stock_order_since(submit_start_ts, timeout_s=1.5)
+        got_order_cb = cb.wait_stock_order_since(submit_start_ts, timeout_s=3.0)
+        if not got_order_cb:
+            print(
+                f"[{_now_str()}] WARN: no on_stock_order received within 3.0s; use query_orders_today.py to check order_status/status_msg/order_sysid"
+            )
 
         if not order_id or int(order_id) <= 0:
             deadline = time.time() + max(0, args.error_wait_ms) / 1000.0
