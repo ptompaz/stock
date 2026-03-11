@@ -101,6 +101,122 @@ class Callback(xttrader.XtQuantTraderCallback):
         return None
 
 
+def _get_error_id(err: Any) -> Optional[int]:
+    try:
+        v = getattr(err, "error_id", None)
+        if v is None:
+            v = getattr(err, "m_nErrorID", None)
+        if v is None:
+            return None
+        return int(v)
+    except Exception:
+        return None
+
+
+def _submit_order_and_wait_error(
+    *,
+    trader: xttrader.XtQuantTrader,
+    account: StockAccount,
+    cb: Callback,
+    code: str,
+    order_type: int,
+    volume: int,
+    price_type: int,
+    price: float,
+    strategy_name: str,
+    remark: str,
+    error_wait_ms: int,
+) -> tuple[int, Optional[Any]]:
+    submit_start_ts = time.time()
+    order_id = trader.order_stock(
+        account=account,
+        stock_code=code,
+        order_type=order_type,
+        order_volume=int(volume),
+        price_type=price_type,
+        price=float(price),
+        strategy_name=strategy_name,
+        order_remark=remark,
+    )
+    time.sleep(max(0, int(error_wait_ms)) / 1000.0)
+    err = cb.get_last_error_since(submit_start_ts)
+    return int(order_id or 0), err
+
+
+def _wait_until_ready_by_probe(
+    *,
+    trader: xttrader.XtQuantTrader,
+    account: StockAccount,
+    cb: Callback,
+    probe_code: str,
+    probe_side: str,
+    probe_volume: int,
+    probe_price: float,
+    strategy_name: str,
+    remark: str,
+    error_wait_ms: int,
+    interval_s: float,
+    max_tries: int,
+    cancelable_only: bool,
+) -> bool:
+    probe_code = probe_code.strip().upper()
+    if probe_side not in ("buy", "sell"):
+        probe_side = "buy"
+    probe_order_type = xtconstant.STOCK_BUY if probe_side == "buy" else xtconstant.STOCK_SELL
+
+    tries = 0
+    while True:
+        tries += 1
+        if max_tries and tries > max_tries:
+            print(f"[{_now_str()}] ERROR: 探针重试次数已达上限 max_tries={max_tries}")
+            return False
+
+        print(
+            f"[{_now_str()}] 探针下单: side={probe_side} code={probe_code} price={probe_price} volume={probe_volume} (try {tries})"
+        )
+
+        order_id, err = _submit_order_and_wait_error(
+            trader=trader,
+            account=account,
+            cb=cb,
+            code=probe_code,
+            order_type=probe_order_type,
+            volume=int(probe_volume),
+            price_type=xtconstant.FIX_PRICE,
+            price=float(probe_price),
+            strategy_name=strategy_name,
+            remark=remark,
+            error_wait_ms=error_wait_ms,
+        )
+
+        print(f"[{_now_str()}] 探针 order_stock 返回 order_id={order_id}")
+
+        if err is not None:
+            eid = _get_error_id(err)
+            if eid == 120022:
+                print(f"[{_now_str()}] 探针仍处于关闭状态(120022)，等待 {interval_s}s 后重试")
+                time.sleep(max(0.1, float(interval_s)))
+                continue
+            print(f"[{_now_str()}] 探针检测到非120022错误，认为系统已就绪:\n{_fmt_obj(err)}")
+            return True
+
+        if order_id > 0:
+            try:
+                orders = trader.query_stock_orders(account, cancelable_only=bool(cancelable_only))
+                for o in orders:
+                    o_id = getattr(o, "order_id", None) or getattr(o, "m_nOrderID", None)
+                    if o_id == int(order_id):
+                        print(f"[{_now_str()}] 探针订单已能查询到，认为系统已就绪")
+                        return True
+            except Exception as e:
+                print(f"[{_now_str()}] 探针查询订单时出错: {e}")
+
+        print(
+            f"[{_now_str()}] ERROR: 探针未收到错误回调，且查询不到订单(order_id={order_id})，退出。"
+        )
+        return False
+
+
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="通过QMT下单，然后主动查询订单状态（不依赖回调等待）。"
@@ -129,6 +245,14 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--query-retries", type=int, default=3, help="查询订单的最大重试次数")
     p.add_argument("--query-interval", type=float, default=1.0, help="每次查询之间的间隔秒数")
     p.add_argument("--cancelable-only", action="store_true", help="查询时是否只返回可撤订单")
+
+    p.add_argument("--wait-until-ready", action="store_true", help="循环探针检测系统是否就绪(不再返回120022)后再提交真实单")
+    p.add_argument("--probe-code", default="601995.SH", help="探针股票代码")
+    p.add_argument("--probe-side", default="buy", choices=["buy", "sell"], help="探针方向")
+    p.add_argument("--probe-volume", type=int, default=100, help="探针数量")
+    p.add_argument("--probe-price", type=float, default=0.01, help="探针价格")
+    p.add_argument("--probe-interval", type=float, default=10.0, help="探针重试间隔秒数")
+    p.add_argument("--probe-max-tries", type=int, default=0, help="探针最大重试次数，0表示无限")
 
     return p.parse_args()
 
@@ -171,6 +295,25 @@ def main() -> int:
         trader.connect()
 
         account = StockAccount(args.account_id)
+
+        if bool(args.wait_until_ready):
+            ok = _wait_until_ready_by_probe(
+                trader=trader,
+                account=account,
+                cb=cb,
+                probe_code=_normalize_code(args.probe_code, args.default_exchange),
+                probe_side=str(args.probe_side),
+                probe_volume=int(args.probe_volume),
+                probe_price=float(args.probe_price),
+                strategy_name=args.strategy_name,
+                remark=args.remark,
+                error_wait_ms=int(args.error_wait_ms),
+                interval_s=float(args.probe_interval),
+                max_tries=int(args.probe_max_tries),
+                cancelable_only=bool(args.cancelable_only),
+            )
+            if not ok:
+                return 1
 
         # 下单
         submit_start_ts = time.time()

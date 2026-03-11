@@ -28,11 +28,6 @@ $env:QMT_PATH = "F:\stock\qmt\userdata_mini"
 $env:QMT_PATH
 ```
 
-写入用户环境变量（新开 PowerShell 才生效）：
-
-```powershell
-setx QMT_PATH "F:\stock\qmt\userdata_mini"
-```
 
 本目录用于测试 `xtquant.xttrader` 通过本机 MiniQMT/QMT 进行：
 
@@ -69,6 +64,12 @@ python place_order.py --side sell --stockid 601995.SH --price 35.5  --volume 100
 可转债
 python place_order.py --side buy --stockid 113033.SH --price 109.1  --volume 500 --account-id 31161458 --live --confirm YES --error-wait-ms 5000
 
+
+增加一个探测可用状态的，夜间委托使用
+python place_order.py --wait-until-ready ^
+  --probe-code 601059.SH --probe-price 0.01 --probe-volume 100 --probe-interval 5 --probe-max-tries 0 ^
+  --side buy --stockid 113033.SH --price 109.1 --volume 10 --account-id 31161458 ^
+  --live --confirm YES --error-wait-ms 5000
 
 
 ### 4）`timed_order.py`  抢涨停，lgh
