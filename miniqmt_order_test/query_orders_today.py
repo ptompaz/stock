@@ -6,6 +6,8 @@ from datetime import datetime
 from xtquant import xttrader
 from xtquant.xttype import StockAccount
 
+from qmt_config import get_qmt_path
+
 
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
@@ -39,7 +41,7 @@ def _to_row(o) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--qmt-path", default=r"F:\stock\qmt\userdata_mini")
+    ap.add_argument("--qmt-path", default=get_qmt_path())
     ap.add_argument("--account-id", default="31161458")
     ap.add_argument("--session", type=int, default=1)
     ap.add_argument("--cancelable-only", action="store_true")

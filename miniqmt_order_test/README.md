@@ -1,5 +1,39 @@
 # miniQMT 下单流程冒烟测试
 
+## QMT_PATH 环境变量（推荐）
+
+本目录脚本默认会读取环境变量 `QMT_PATH` 作为 `--qmt-path` 的默认值；若未设置则回退到 `F:\stock\qmt\userdata_mini`。
+
+### cmd.exe
+
+当前窗口临时生效：
+
+```bat
+set QMT_PATH=F:\stock\qmt\userdata_mini
+echo %QMT_PATH%
+```
+
+写入用户环境变量（新开 cmd 才生效）：
+
+```bat
+setx QMT_PATH "F:\stock\qmt\userdata_mini"
+```
+
+### PowerShell
+
+当前窗口临时生效：
+
+```powershell
+$env:QMT_PATH = "F:\stock\qmt\userdata_mini"
+$env:QMT_PATH
+```
+
+写入用户环境变量（新开 PowerShell 才生效）：
+
+```powershell
+setx QMT_PATH "F:\stock\qmt\userdata_mini"
+```
+
 本目录用于测试 `xtquant.xttrader` 通过本机 MiniQMT/QMT 进行：
 
 - 连接/启动交易会话

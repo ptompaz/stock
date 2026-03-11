@@ -18,6 +18,8 @@ from xtquant import xtconstant
 from xtquant import xttrader
 from xtquant.xttype import StockAccount
 
+from qmt_config import get_qmt_path
+
 
 def _now() -> str:
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
@@ -312,7 +314,7 @@ def main() -> int:
     os.environ["PYTHONHASHSEED"] = "0"
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--qmt-path", default=r"F:\stock\qmt\userdata_mini")
+    ap.add_argument("--qmt-path", default=get_qmt_path())
     ap.add_argument("--account-id", default="31161458")
     ap.add_argument("--session", type=int, default=1)
 

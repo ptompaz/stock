@@ -7,6 +7,8 @@ import time
 from dataclasses import asdict, is_dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from qmt_config import get_qmt_path
+
 from ntp_utils import sample_ntp_average
 
 from xtquant import xtconstant
@@ -83,7 +85,7 @@ def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
 
     # Defaults aligned with timed_order.py usage
-    ap.add_argument("--qmt-path", default=r"F:\\stock\\qmt\\userdata_mini")
+    ap.add_argument("--qmt-path", default=get_qmt_path())
     ap.add_argument("--account-id", default="31161458")
     ap.add_argument("--session", type=int, default=1)
 
